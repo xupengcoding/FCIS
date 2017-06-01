@@ -790,37 +790,47 @@ class resnet_v1_101_fcis(Symbol):
         else:
             conv_new_1 = mx.sym.Convolution(data=relu1, kernel=(1, 1), num_filter=1024, name='conv_new_1')
         relu_new_1 = mx.sym.Activation(data=conv_new_1, act_type='relu', name='relu_new_1')
-
-        fcis_cls_seg = mx.sym.Convolution(data=relu_new_1, kernel=(1, 1), num_filter=7*7*num_classes*2,
-                                          name='fcis_cls_seg')
+        
+        #fcis_cls_path
+        fcis_cls = mx.sym.Convolution(data=relu_new_1, kernel=(1, 1), num_filter=7*7*num_classes*2, name='fcis_cls')
+        #fcis_seg_path
+        fcis_seg = mx.sym.Convolution(data=relu_new_1, kernel=(1, 1), num_filter=7*7*num_classes*2, name='fcis_cls')
+        
+        #fcis_cls_seg = mx.sym.Convolution(data=relu_new_1, kernel=(1, 1), num_filter=7*7*num_classes*2,
+         #                                 name='fcis_cls_seg')
+        #
         fcis_bbox = mx.sym.Convolution(data=relu_new_1, kernel=(1, 1), num_filter=7*7*4*num_reg_classes,
                                        name='fcis_bbox')
 
-        psroipool_cls_seg = mx.contrib.sym.PSROIPooling(name='psroipool_cls_seg', data=fcis_cls_seg, rois=rois,
-                                                        group_size=7, pooled_size=21, output_dim=num_classes*2, spatial_scale=0.0625)
+        psroipool_cls = mx.contrib.sym.PSROIPooling(name='psroipool_cls_seg', data=fcis_cls, rois=rois,
+                                                    group_size=7, pooled_size=21, output_dim=num_classes*2, spatial_scale=0.0625)
+        
+        psroipool_seg = mx.contrib.sym.PSROIPooling(name='psroipool_cls_seg', data=fcis_seg, rois=rois,
+                                                    group_size=7, pooled_size=21, output_dim=num_classes*2, spatial_scale=0.0625)
+        
         psroipool_bbox_pred = mx.contrib.sym.PSROIPooling(name='psroipool_bbox', data=fcis_bbox, rois=rois,
                                                           group_size=7, pooled_size=21,  output_dim=num_reg_classes*4, spatial_scale=0.0625)
         if is_train:
             # classification path
-            psroipool_cls = mx.contrib.sym.ChannelOperator(name='psroipool_cls', data=psroipool_cls_seg, group=num_classes, op_type='Group_Max')
+            psroipool_cls = mx.contrib.sym.ChannelOperator(name='psroipool_cls', data=psroipool_cls, group=num_classes, op_type='Group_Max')
             cls_score = mx.sym.Pooling(name='cls_score', data=psroipool_cls, pool_type='avg', global_pool=True, kernel=(21, 21))
             cls_score = mx.sym.Reshape(name='cls_score_reshape', data=cls_score, shape=(-1, num_classes))
             # mask regression path
             label_seg = mx.sym.Reshape(name='label_seg', data=label, shape=(-1, 1, 1, 1))
-            seg_pred = mx.contrib.sym.ChannelOperator(name='seg_pred', data=psroipool_cls_seg, pick_idx=label_seg, group=num_classes, op_type='Group_Pick', pick_type='Label_Pick')
+            seg_pred = mx.contrib.sym.ChannelOperator(name='seg_pred', data=psroipool_seg, pick_idx=label_seg, group=num_classes, op_type='Group_Pick', pick_type='Label_Pick')
             # bbox regression path
             bbox_pred = mx.sym.Pooling(name='bbox_pred', data=psroipool_bbox_pred, pool_type='avg', global_pool=True, kernel=(21, 21))
             bbox_pred = mx.sym.Reshape(name='bbox_pred_reshape', data=bbox_pred, shape=(-1, 4 * num_reg_classes))
         else:
             # classification path
-            psroipool_cls = mx.contrib.sym.ChannelOperator(name='psroipool_cls', data=psroipool_cls_seg, group=num_classes, op_type='Group_Max')
+            psroipool_cls = mx.contrib.sym.ChannelOperator(name='psroipool_cls', data=psroipool_cls, group=num_classes, op_type='Group_Max')
             cls_score = mx.sym.Pooling(name='cls_score', data=psroipool_cls, pool_type='avg', global_pool=True,
                                        kernel=(21, 21))
             cls_score = mx.sym.Reshape(name='cls_score_reshape', data=cls_score, shape=(-1, num_classes))
             cls_prob = mx.sym.SoftmaxActivation(name='cls_prob', data=cls_score)
             # mask regression path
             score_seg = mx.sym.Reshape(name='score_seg', data=cls_prob, shape=(-1, num_classes, 1, 1))
-            seg_softmax = mx.contrib.sym.ChannelOperator(name='seg_softmax', data=psroipool_cls_seg, group=num_classes, op_type='Group_Softmax')
+            seg_softmax = mx.contrib.sym.ChannelOperator(name='seg_softmax', data=psroipool_seg, group=num_classes, op_type='Group_Softmax')
             seg_pred = mx.contrib.sym.ChannelOperator(name='seg_pred', data=seg_softmax, pick_idx=score_seg, group=num_classes, op_type='Group_Pick', pick_type='Score_Pick')
             # bbox regression path
             bbox_pred = mx.sym.Pooling(name='bbox_pred', data=psroipool_bbox_pred, pool_type='avg', global_pool=True,
@@ -835,7 +845,8 @@ class resnet_v1_101_fcis(Symbol):
                                                 mask_targets=mask_reg_targets, bbox_targets=bbox_target, bbox_weights=bbox_weight)
                 cls_prob = mx.sym.SoftmaxOutput(name='cls_prob', data=cls_score, label=labels_ohem, normalization='valid',
                                                 use_ignore=True, ignore_label=-1, grad_scale=cfg.TRAIN.LOSS_WEIGHT[0])
-                seg_prob = mx.sym.SoftmaxOutput(name='seg_prob', data=seg_pred, label=mask_targets_ohem, multi_output=True,
+                #orig is SoftmaxOutput
+                seg_prob = mx.sym.SigmoidOutput(name='seg_prob', data=seg_pred, label=mask_targets_ohem, multi_output=True,
                                                 normalization='null', use_ignore=True, ignore_label=-1,
                                                 grad_scale=cfg.TRAIN.LOSS_WEIGHT[1] / cfg.TRAIN.BATCH_ROIS_OHEM)
                 bbox_loss_t = bbox_weights_ohem * mx.sym.smooth_l1(name='bbox_loss_t', scalar=1.0, data=(bbox_pred - bbox_target))
@@ -844,7 +855,8 @@ class resnet_v1_101_fcis(Symbol):
             else:
                 cls_prob = mx.sym.SoftmaxOutput(name='cls_prob', data=cls_score, label=label, normalization='valid',
                                                 use_ignore=True, ignore_label=-1, grad_scale=cfg.TRAIN.LOSS_WEIGHT[0])
-                seg_prob = mx.sym.SoftmaxOutput(name='seg_prob', data=seg_pred, label=mask_reg_targets, multi_output=True,
+                #orig is SoftmaxOutput
+                seg_prob = mx.sym.SigmoidOutput(name='seg_prob', data=seg_pred, label=mask_reg_targets, multi_output=True,
                                                 normalization='null', use_ignore=True, ignore_label=-1,
                                                 grad_scale=cfg.TRAIN.LOSS_WEIGHT[1] / cfg.TRAIN.BATCH_ROIS)
                 bbox_loss_t = bbox_weight * mx.sym.smooth_l1(name='bbox_loss_t', scalar=1.0, data=(bbox_pred - bbox_target))
